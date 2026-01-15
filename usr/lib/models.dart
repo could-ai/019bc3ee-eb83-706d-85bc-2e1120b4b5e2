@@ -1,25 +1,28 @@
 enum PokemonType {
-  pikachu, // 快速，低伤 (Fast, Low Dmg)
-  charmander, // 慢速，高伤 (Slow, High Dmg)
-  bulbasaur, // 中等 (Medium)
+  pikachu, // Fast, Low Dmg
+  charmander, // Slow, High Dmg
+  bulbasaur, // Medium
+  squirtle, // New: Water type, medium range
+  eevee, // New: Fast and cheap
 }
 
 class GameConfig {
-  static const double enemySpeed = 100.0; // pixels per second
+  static const double enemySpeed = 100.0;
   static const int startingMoney = 150;
   static const int startingLives = 10;
 }
 
 class Enemy {
   String id;
-  double progress; // 0.0 to 1.0 along the path
-  int pathIndex; // Current segment of the path
+  double progress;
+  int pathIndex;
   double x;
   double y;
   double hp;
   double maxHp;
   double speed;
-  bool frozen; // Effect from Bulbasaur? (Future feature)
+  bool frozen;
+  PokemonType type; // Added for variety
 
   Enemy({
     required this.id,
@@ -31,6 +34,7 @@ class Enemy {
     this.maxHp = 100,
     this.speed = 1.0,
     this.frozen = false,
+    this.type = PokemonType.pikachu,
   });
 }
 
@@ -41,8 +45,9 @@ class Tower {
   PokemonType type;
   double range;
   double damage;
-  double cooldown; // Seconds
+  double cooldown;
   double timeSinceLastShot;
+  int level; // Added for upgrading
 
   Tower({
     required this.id,
@@ -52,13 +57,16 @@ class Tower {
   }) : timeSinceLastShot = 0,
        range = _getRange(type),
        damage = _getDamage(type),
-       cooldown = _getCooldown(type);
+       cooldown = _getCooldown(type),
+       level = 1;
 
   static double _getRange(PokemonType type) {
     switch (type) {
       case PokemonType.pikachu: return 120;
       case PokemonType.charmander: return 150;
       case PokemonType.bulbasaur: return 100;
+      case PokemonType.squirtle: return 130;
+      case PokemonType.eevee: return 110;
     }
   }
 
@@ -67,14 +75,18 @@ class Tower {
       case PokemonType.pikachu: return 15;
       case PokemonType.charmander: return 40;
       case PokemonType.bulbasaur: return 25;
+      case PokemonType.squirtle: return 30;
+      case PokemonType.eevee: return 12;
     }
   }
 
   static double _getCooldown(PokemonType type) {
     switch (type) {
-      case PokemonType.pikachu: return 0.5; // Fast
-      case PokemonType.charmander: return 1.5; // Slow
-      case PokemonType.bulbasaur: return 1.0; // Medium
+      case PokemonType.pikachu: return 0.5;
+      case PokemonType.charmander: return 1.5;
+      case PokemonType.bulbasaur: return 1.0;
+      case PokemonType.squirtle: return 1.2;
+      case PokemonType.eevee: return 0.4;
     }
   }
   
@@ -83,6 +95,8 @@ class Tower {
       case PokemonType.pikachu: return 50;
       case PokemonType.charmander: return 100;
       case PokemonType.bulbasaur: return 75;
+      case PokemonType.squirtle: return 85;
+      case PokemonType.eevee: return 40;
     }
   }
   
@@ -91,6 +105,8 @@ class Tower {
       case PokemonType.pikachu: return "皮卡丘";
       case PokemonType.charmander: return "小火龙";
       case PokemonType.bulbasaur: return "妙蛙种子";
+      case PokemonType.squirtle: return "杰尼龟";
+      case PokemonType.eevee: return "伊布";
     }
   }
 }
@@ -118,5 +134,19 @@ class Projectile {
     required this.type,
     this.speed = 400,
     this.active = true,
+  });
+}
+
+class GoldDrop {
+  double x;
+  double y;
+  int amount;
+  double opacity;
+
+  GoldDrop({
+    required this.x,
+    required this.y,
+    required this.amount,
+    this.opacity = 1.0,
   });
 }

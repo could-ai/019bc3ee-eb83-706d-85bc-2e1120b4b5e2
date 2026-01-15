@@ -20,11 +20,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   int _lives = GameConfig.startingLives;
   int _wave = 1;
   bool _gameOver = false;
+  bool _paused = false; // New: Pause feature
   
   // Entities
   List<Enemy> _enemies = [];
   List<Tower> _towers = [];
   List<Projectile> _projectiles = [];
+  List<GoldDrop> _goldDrops = []; // New: Gold drop animations
   
   // Wave Management
   Timer? _waveTimer;
@@ -32,36 +34,48 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   
   // UI State
   PokemonType? _selectedTowerType;
-
-  // Path Definition (Normalized 0.0 to 1.0)
+  Tower? _selectedTower; // New: For upgrading
+  
+  // Path Definition (More complex for variety)
   final List<Offset> _pathPoints = [
-    const Offset(0.0, 0.2),
-    const Offset(0.8, 0.2),
-    const Offset(0.8, 0.5),
-    const Offset(0.2, 0.5),
-    const Offset(0.2, 0.8),
-    const Offset(1.0, 0.8),
+    const Offset(0.0, 0.3),
+    const Offset(0.3, 0.3),
+    const Offset(0.3, 0.6),
+    const Offset(0.7, 0.6),
+    const Offset(0.7, 0.2),
+    const Offset(1.0, 0.2),
   ];
-
+  
+  // Animations
+  late AnimationController _waveTextController;
+  late Animation<double> _waveTextAnimation;
+  
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_gameLoop);
     _ticker.start();
     _startWave();
+    
+    // Animation for wave start text
+    _waveTextController = AnimationController(vsync: this, duration: const Duration(seconds: 2));
+    _waveTextAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(_waveTextController);
   }
-
+  
   @override
   void dispose() {
     _ticker.dispose();
     _waveTimer?.cancel();
+    _waveTextController.dispose();
     super.dispose();
   }
-
+  
   void _startWave() {
+    if (_paused) return;
     _enemiesSpawnedInWave = 0;
+    _waveTextController.forward(from: 0.0); // Animate wave start
     _waveTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_gameOver) {
+      if (_gameOver || _paused) {
         timer.cancel();
         return;
       }
@@ -71,36 +85,42 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         _enemiesSpawnedInWave++;
       } else {
         timer.cancel();
-        // Wait for all enemies to die before next wave? 
-        // For simplicity, we just auto-start next wave after a delay if desired, 
-        // but here we'll let the user trigger or just wait.
-        // Let's auto-increment wave logic in game loop if list is empty.
+        // Auto-start next wave after delay
+        Future.delayed(const Duration(seconds: 3), () {
+          if (!_gameOver && !_paused) {
+            _wave++;
+            _startWave();
+          }
+        });
       }
     });
   }
-
+  
   void _spawnEnemy() {
     setState(() {
-      // Increase HP with waves
+      // Random enemy types for variety
+      PokemonType enemyType = PokemonType.values[Random().nextInt(PokemonType.values.length)];
       double hp = 100.0 + (_wave * 20);
+      double speed = 0.1 + (_wave * 0.01) + Random().nextDouble() * 0.05; // Slight randomization
       _enemies.add(Enemy(
         id: DateTime.now().toString() + Random().nextInt(1000).toString(),
         maxHp: hp,
         hp: hp,
-        speed: 0.1 + (_wave * 0.01), // Slightly faster each wave
+        speed: speed,
+        type: enemyType,
       ));
     });
   }
-
+  
   void _gameLoop(Duration elapsed) {
-    if (_gameOver) return;
-
+    if (_gameOver || _paused) return;
+    
     double currentTime = elapsed.inMilliseconds / 1000.0;
     double dt = currentTime - _lastTime;
     _lastTime = currentTime;
-
-    if (dt > 0.1) dt = 0.1; // Cap delta time to prevent huge jumps
-
+    
+    if (dt > 0.1) dt = 0.1; // Cap delta time
+    
     setState(() {
       Size screenSize = MediaQuery.of(context).size;
       
@@ -116,20 +136,17 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             _gameOver = true;
           }
         } else if (enemy.hp <= 0) {
-          _money += 15; // Reward
+          // Gold drop animation
+          _goldDrops.add(GoldDrop(
+            x: enemy.x,
+            y: enemy.y,
+            amount: 15 + Random().nextInt(10),
+          ));
+          _money += 15;
           _enemies.removeAt(i);
         }
       }
-
-      // Check for next wave
-      if (_enemies.isEmpty && _waveTimer?.isActive == false && !_gameOver) {
-         // Simple auto-wave for this demo
-         if (Random().nextInt(100) == 0) { // Small delay chance
-           _wave++;
-           _startWave();
-         }
-      }
-
+      
       // 2. Towers Attack
       for (Tower tower in _towers) {
         tower.timeSinceLastShot += dt;
@@ -150,48 +167,49 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           }
         }
       }
-
+      
       // 3. Update Projectiles
       for (int i = _projectiles.length - 1; i >= 0; i--) {
         Projectile p = _projectiles[i];
         _moveProjectile(p, dt);
         
-        // Simple collision logic (distance check)
         bool hit = false;
-        // Update target position if enemy still exists
         try {
           Enemy target = _enemies.firstWhere((e) => e.id == p.targetEnemyId);
           double dx = target.x - p.x;
           double dy = target.y - p.y;
           double dist = sqrt(dx*dx + dy*dy);
           
-          if (dist < 20) { // Hit radius
+          if (dist < 20) {
             target.hp -= p.damage;
             hit = true;
           } else {
-            // Homing missile logic
             double angle = atan2(dy, dx);
             p.targetX = target.x;
             p.targetY = target.y;
           }
         } catch (e) {
-          // Target dead, just continue to last known pos or remove
-          hit = true; // Remove if target lost
+          hit = true;
         }
-
+        
         if (hit) {
           _projectiles.removeAt(i);
         }
       }
+      
+      // 4. Update Gold Drops
+      for (int i = _goldDrops.length - 1; i >= 0; i--) {
+        GoldDrop drop = _goldDrops[i];
+        drop.y += 100 * dt; // Float up
+        drop.opacity -= 0.5 * dt;
+        if (drop.opacity <= 0) {
+          _goldDrops.removeAt(i);
+        }
+      }
     });
   }
-
+  
   void _moveEnemy(Enemy enemy, double dt, Size screenSize) {
-    // Calculate total path length in pixels to normalize speed
-    // For simplicity, we treat path segments as equal length or just use progress
-    // A better way is to calculate real pixels.
-    
-    // Let's map progress (0.0-1.0) to path segments
     int segmentCount = _pathPoints.length - 1;
     double totalProgress = enemy.progress * segmentCount;
     int currentSegment = totalProgress.floor();
@@ -201,17 +219,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       enemy.progress = 1.0;
       return;
     }
-
+    
     Offset p1 = _scalePoint(_pathPoints[currentSegment], screenSize);
     Offset p2 = _scalePoint(_pathPoints[currentSegment + 1], screenSize);
     
-    // Move logic
-    // Speed is roughly % of screen per second
-    double moveSpeed = enemy.speed * 0.5; // Adjust factor
+    double moveSpeed = enemy.speed * 0.5;
     enemy.progress += moveSpeed * dt;
     
-    // Update X,Y for rendering and collision
-    // Re-calculate based on new progress
     totalProgress = enemy.progress * segmentCount;
     currentSegment = totalProgress.floor();
     segmentProgress = totalProgress - currentSegment;
@@ -223,7 +237,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       enemy.y = p1.dy + (p2.dy - p1.dy) * segmentProgress;
     }
   }
-
+  
   void _moveProjectile(Projectile p, double dt) {
     double dx = p.targetX - p.x;
     double dy = p.targetY - p.y;
@@ -232,18 +246,17 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     p.x += cos(angle) * p.speed * dt;
     p.y += sin(angle) * p.speed * dt;
   }
-
+  
   Enemy? _findTarget(Tower tower) {
     Enemy? bestTarget;
-    double minDist = tower.range; // Start with max range
-
+    double minDist = tower.range;
+    
     for (Enemy enemy in _enemies) {
       double dx = enemy.x - tower.x;
       double dy = enemy.y - tower.y;
       double dist = sqrt(dx*dx + dy*dy);
       
       if (dist <= tower.range) {
-        // Simple logic: target closest to end (highest progress)
         if (bestTarget == null || enemy.progress > bestTarget.progress) {
           bestTarget = enemy;
         }
@@ -251,26 +264,33 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     }
     return bestTarget;
   }
-
+  
   Offset _scalePoint(Offset p, Size size) {
     return Offset(p.dx * size.width, p.dy * size.height);
   }
-
+  
   void _placeTower(TapDownDetails details) {
-    if (_gameOver) return;
+    if (_gameOver || _paused) return;
     if (_selectedTowerType == null) return;
     
     int cost = Tower.getCost(_selectedTowerType!);
     if (_money < cost) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('金币不足! (Not enough money)')),
+        SnackBar(content: Text('金币不足! (Not enough money)'), backgroundColor: Colors.redAccent),
       );
       return;
     }
-
-    // Check if placing on path (Simple check: distance to any path segment)
-    // For MVP, we just allow placement anywhere not too close to path
-    // Skipping complex path collision for now to keep code simple
+    
+    // Simple path collision (avoid placing too close to path)
+    bool onPath = false;
+    for (Offset point in _pathPoints) {
+      Offset scaled = _scalePoint(point, MediaQuery.of(context).size);
+      if ((scaled - details.localPosition).distance < 50) {
+        onPath = true;
+        break;
+      }
+    }
+    if (onPath) return;
     
     setState(() {
       _money -= cost;
@@ -280,136 +300,262 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         y: details.localPosition.dy,
         type: _selectedTowerType!,
       ));
-      _selectedTowerType = null; // Deselect after placement
+      _selectedTowerType = null;
     });
   }
-
+  
+  void _upgradeTower(Tower tower) {
+    int cost = 25; // Upgrade cost
+    if (_money >= cost) {
+      setState(() {
+        _money -= cost;
+        tower.damage += 10;
+        tower.range += 20;
+      });
+    }
+  }
+  
   @override
   Widget build(BuildContext context) {
     Size screenSize = MediaQuery.of(context).size;
-
+    
     return Scaffold(
       body: Stack(
         children: [
-          // 1. Map Background
-          Container(color: Colors.green[50]),
+          // 1. Background (Gradient for Q-moe style)
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.lightGreenAccent, Colors.lightBlueAccent],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+          ),
           
           // 2. Path
           CustomPaint(
             size: Size.infinite,
             painter: PathPainter(_pathPoints),
           ),
-
+          
           // 3. Towers
           ..._towers.map((t) => Positioned(
-            left: t.x - 20,
-            top: t.y - 20,
-            child: _buildTowerWidget(t),
+            left: t.x - 25,
+            top: t.y - 25,
+            child: GestureDetector(
+              onTap: () => setState(() => _selectedTower = t),
+              child: _buildTowerWidget(t),
+            ),
           )),
-
-          // 4. Enemies
+          
+          // 4. Tower Range Preview
+          if (_selectedTowerType != null)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: RangePainter(
+                  center: Offset.zero, // Will be set in painter
+                  range: Tower._getRange(_selectedTowerType!),
+                  screenSize: screenSize,
+                ),
+              ),
+            ),
+          
+          // 5. Enemies
           ..._enemies.map((e) => Positioned(
-            left: e.x - 15,
-            top: e.y - 15,
+            left: e.x - 20,
+            top: e.y - 20,
             child: _buildEnemyWidget(e),
           )),
-
-          // 5. Projectiles
+          
+          // 6. Projectiles
           ..._projectiles.map((p) => Positioned(
-            left: p.x - 5,
-            top: p.y - 5,
-            child: Container(
-              width: 10,
-              height: 10,
+            left: p.x - 8,
+            top: p.y - 8,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 100),
+              width: 16,
+              height: 16,
               decoration: BoxDecoration(
                 color: _getProjectileColor(p.type),
                 shape: BoxShape.circle,
+                boxShadow: [BoxShadow(color: _getProjectileColor(p.type).withOpacity(0.5), blurRadius: 10)],
               ),
             ),
           )),
-
-          // 6. Interaction Layer (Tap to place)
+          
+          // 7. Gold Drops
+          ..._goldDrops.map((g) => Positioned(
+            left: g.x - 10,
+            top: g.y - 10,
+            child: Opacity(
+              opacity: g.opacity,
+              child: Text(
+                '+${g.amount}',
+                style: const TextStyle(color: Colors.amber, fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+          )),
+          
+          // 8. Tap Layer
           GestureDetector(
             onTapDown: _placeTower,
             behavior: HitTestBehavior.translucent,
             child: Container(color: Colors.transparent),
           ),
-
-          // 7. HUD / UI
+          
+          // 9. HUD
           SafeArea(
             child: Column(
               children: [
-                // Top Bar
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  color: Colors.black54,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Wave: $_wave', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                      Text('Lives: $_lives', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                      Text('Money: \$$_money', style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
-                    ],
+                // Top Bar (Improved with cards and icons)
+                Card(
+                  color: Colors.white.withOpacity(0.9),
+                  margin: const EdgeInsets.all(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.access_time, color: Colors.blue),
+                            const SizedBox(width: 4),
+                            Text('Wave: $_wave', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            const Icon(Icons.favorite, color: Colors.red),
+                            const SizedBox(width: 4),
+                            Text('Lives: $_lives', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            const Icon(Icons.attach_money, color: Colors.amber),
+                            const SizedBox(width: 4),
+                            Text('Money: $_money', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        IconButton(
+                          icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
+                          onPressed: () => setState(() => _paused = !_paused),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
+                
+                // Wave Start Animation
+                if (_waveTextAnimation.value > 0)
+                  FadeTransition(
+                    opacity: _waveTextAnimation,
+                    child: Center(
+                      child: Card(
+                        color: Colors.yellowAccent.withOpacity(0.8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text('Wave $_wave Starting!', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ),
+                  ),
+                
                 if (_gameOver)
                   Center(
-                    child: Container(
-                      padding: const EdgeInsets.all(20),
-                      color: Colors.black87,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text("GAME OVER", style: TextStyle(color: Colors.red, fontSize: 30)),
-                          ElevatedButton(
-                            onPressed: () {
-                              setState(() {
-                                _gameOver = false;
-                                _money = GameConfig.startingMoney;
-                                _lives = GameConfig.startingLives;
-                                _wave = 1;
-                                _enemies.clear();
-                                _towers.clear();
-                                _projectiles.clear();
-                                _startWave();
-                              });
-                            },
-                            child: const Text("Restart"),
-                          )
-                        ],
+                    child: Card(
+                      color: Colors.black.withOpacity(0.9),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text("GAME OVER", style: TextStyle(color: Colors.red, fontSize: 30, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 10),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+                              onPressed: () {
+                                setState(() {
+                                  _gameOver = false;
+                                  _paused = false;
+                                  _money = GameConfig.startingMoney;
+                                  _lives = GameConfig.startingLives;
+                                  _wave = 1;
+                                  _enemies.clear();
+                                  _towers.clear();
+                                  _projectiles.clear();
+                                  _goldDrops.clear();
+                                  _startWave();
+                                });
+                              },
+                              child: const Text("Restart", style: TextStyle(color: Colors.white)),
+                            )
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 const Spacer(),
                 // Bottom Bar (Tower Selection)
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  color: Colors.white,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: PokemonType.values.map((type) {
-                      bool isSelected = _selectedTowerType == type;
-                      return GestureDetector(
-                        onTap: () => setState(() => _selectedTowerType = type),
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: isSelected ? Colors.blue[100] : Colors.grey[100],
-                            border: isSelected ? Border.all(color: Colors.blue, width: 2) : null,
-                            borderRadius: BorderRadius.circular(8),
+                Card(
+                  color: Colors.white.withOpacity(0.9),
+                  margin: const EdgeInsets.all(8),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: PokemonType.values.map((type) {
+                        bool isSelected = _selectedTowerType == type;
+                        return GestureDetector(
+                          onTap: () => setState(() => _selectedTowerType = type),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: isSelected ? Colors.blue[100] : Colors.grey[100],
+                              border: isSelected ? Border.all(color: Colors.blue, width: 3) : null,
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: isSelected ? [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 8)] : null,
+                            ),
+                            child: Column(
+                              children: [
+                                _getPokemonIcon(type),
+                                Text(Tower.getName(type), style: const TextStyle(fontSize: 12)),
+                                Text("\$${Tower.getCost(type)}", style: const TextStyle(fontSize: 10, color: Colors.green)),
+                              ],
+                            ),
                           ),
-                          child: Column(
-                            children: [
-                              _getPokemonIcon(type),
-                              Text(Tower.getName(type)),
-                              Text("\$${Tower.getCost(type)}", style: const TextStyle(fontSize: 12, color: Colors.green)),
-                            ],
-                          ),
-                        ),
-                      );
-                    }).toList(),
+                        );
+                      }).toList(),
+                    ),
                   ),
                 ),
+                // Upgrade Panel
+                if (_selectedTower != null)
+                  Card(
+                    color: Colors.white.withOpacity(0.9),
+                    margin: const EdgeInsets.all(8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton(
+                            onPressed: () {
+                              _upgradeTower(_selectedTower!);
+                              _selectedTower = null;
+                            },
+                            child: const Text('Upgrade (\$25)'),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () => setState(() => _selectedTower = null),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -417,58 +563,89 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       ),
     );
   }
-
+  
   Widget _buildTowerWidget(Tower t) {
-    return Column(
-      children: [
-        Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.black, width: 1),
-            boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
-          ),
-          child: Center(child: _getPokemonIcon(t.type)),
-        ),
-        // Range indicator (optional, maybe only when selected)
-      ],
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      width: 50,
+      height: 50,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.black, width: 2),
+        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6, offset: const Offset(0, 2))],
+        gradient: LinearGradient(colors: [Colors.white, Colors.grey[200]!]),
+      ),
+      child: Center(child: _getPokemonIcon(t.type)),
     );
   }
-
+  
   Widget _buildEnemyWidget(Enemy e) {
     return Column(
       children: [
-        // HP Bar
+        // HP Bar (Improved)
         Container(
-          width: 30,
-          height: 4,
-          color: Colors.red[100],
+          width: 35,
+          height: 5,
+          decoration: BoxDecoration(
+            color: Colors.red[100],
+            borderRadius: BorderRadius.circular(2),
+          ),
           child: FractionallySizedBox(
             alignment: Alignment.centerLeft,
             widthFactor: (e.hp / e.maxHp).clamp(0.0, 1.0),
-            child: Container(color: Colors.red),
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: [Colors.red, Colors.redAccent]),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 2),
-        const Icon(Icons.bug_report, color: Colors.purple, size: 30),
+        // Enemy Body (More cute)
+        Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            color: _getEnemyColor(e.type),
+            shape: BoxShape.circle,
+            boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
+          ),
+          child: Center(child: Icon(_getEnemyIcon(e.type), color: Colors.white, size: 20)),
+        ),
       ],
     );
   }
-
+  
   Widget _getPokemonIcon(PokemonType type) {
     switch (type) {
       case PokemonType.pikachu:
-        return const Icon(Icons.flash_on, color: Colors.yellow, size: 24);
+        return const Icon(Icons.flash_on, color: Colors.yellow, size: 28);
       case PokemonType.charmander:
-        return const Icon(Icons.local_fire_department, color: Colors.orange, size: 24);
+        return const Icon(Icons.local_fire_department, color: Colors.orange, size: 28);
       case PokemonType.bulbasaur:
-        return const Icon(Icons.grass, color: Colors.green, size: 24);
+        return const Icon(Icons.grass, color: Colors.green, size: 28);
     }
   }
-
+  
   Color _getProjectileColor(PokemonType type) {
+    switch (type) {
+      case PokemonType.pikachu: return Colors.yellow;
+      case PokemonType.charmander: return Colors.orange;
+      case PokemonType.bulbasaur: return Colors.green;
+    }
+  }
+  
+  IconData _getEnemyIcon(PokemonType type) {
+    switch (type) {
+      case PokemonType.pikachu: return Icons.flash_on;
+      case PokemonType.charmander: return Icons.local_fire_department;
+      case PokemonType.bulbasaur: return Icons.grass;
+    }
+  }
+  
+  Color _getEnemyColor(PokemonType type) {
     switch (type) {
       case PokemonType.pikachu: return Colors.yellow;
       case PokemonType.charmander: return Colors.orange;
@@ -479,45 +656,61 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
 class PathPainter extends CustomPainter {
   final List<Offset> normalizedPoints;
-
+  
   PathPainter(this.normalizedPoints);
-
+  
   @override
   void paint(Canvas canvas, Size size) {
     if (normalizedPoints.isEmpty) return;
-
+    
     Paint paint = Paint()
-      ..color = Colors.brown.withOpacity(0.3)
+      ..shader = LinearGradient(colors: [Colors.brown, Colors.brown[300]!]).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 40
+      ..strokeWidth = 50
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
-
+    
     Path path = Path();
     Offset start = _scale(normalizedPoints[0], size);
     path.moveTo(start.dx, start.dy);
-
+    
     for (int i = 1; i < normalizedPoints.length; i++) {
       Offset p = _scale(normalizedPoints[i], size);
       path.lineTo(p.dx, p.dy);
     }
-
+    
     canvas.drawPath(path, paint);
     
-    // Draw start and end points
+    // Start and end points (More cute)
     Paint pointPaint = Paint()..style = PaintingStyle.fill;
-    
-    // Start (Green)
-    canvas.drawCircle(start, 10, pointPaint..color = Colors.green);
-    
-    // End (Red)
-    canvas.drawCircle(_scale(normalizedPoints.last, size), 10, pointPaint..color = Colors.red);
+    canvas.drawCircle(start, 15, pointPaint..color = Colors.greenAccent);
+    canvas.drawCircle(_scale(normalizedPoints.last, size), 15, pointPaint..color = Colors.redAccent);
   }
-
+  
   Offset _scale(Offset p, Size size) {
     return Offset(p.dx * size.width, p.dy * size.height);
   }
-
+  
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class RangePainter extends CustomPainter {
+  final Offset center;
+  final double range;
+  final Size screenSize;
+  
+  RangePainter({required this.center, required this.range, required this.screenSize});
+  
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Note: This is a placeholder; actual implementation would need tap position
+    Paint paint = Paint()
+      ..color = Colors.blue.withOpacity(0.2)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(size.width / 2, size.height / 2), range, paint);
+  }
+  
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
